@@ -27,9 +27,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
   ) async {
     try {
       emit(
-        state.copyWith(
-          status: MDnsStatus.initial,
-        ),
+        const MDnsState(),
       );
 
       await mDnsService.start();
@@ -57,6 +55,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
             }
           }
         }
+        retries++;
       }
 
       if (dnsSrvRecords.isNotEmpty) {

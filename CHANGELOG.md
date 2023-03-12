@@ -5,3 +5,7 @@
 ## 0.0.2
 
 * Alpha: Improvements to pub.dev score
+
+## 0.0.2
+
+* Alpha: Fix retries
