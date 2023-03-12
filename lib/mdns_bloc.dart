@@ -47,7 +47,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
           await for (SrvResourceRecord srv
               in mDnsService.lookup<SrvResourceRecord>(
                   ResourceRecordQuery.service(ptr.domainName))) {
-            await for (IPAddressResourceRecord ip
+            await for (IPAddressResourceRecord _
                 in mDnsService.lookup<IPAddressResourceRecord>(
                     ResourceRecordQuery.addressIPv4(srv.target))) {
               dnsSrvRecords[srv.name] = srv;
