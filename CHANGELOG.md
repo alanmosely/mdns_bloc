@@ -9,3 +9,7 @@
 ## 0.0.3
 
 * Alpha: Fix retries
+
+## 0.0.4
+
+* Alpha: Add IP address

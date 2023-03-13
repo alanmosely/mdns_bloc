@@ -33,8 +33,8 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
       await mDnsService.start();
       int retries = 0;
       List<PtrResourceRecord> dnsPtrRecords = <PtrResourceRecord>[];
-      Map<String, SrvResourceRecord> dnsSrvRecords =
-          <String, SrvResourceRecord>{};
+      Map<SrvResourceRecord, IPAddressResourceRecord> dnsSrvRecords =
+          <SrvResourceRecord, IPAddressResourceRecord>{};
       SrvResourceRecord? service;
 
       while (dnsSrvRecords.isEmpty && retries <= RETRIES) {
@@ -45,10 +45,10 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
           await for (SrvResourceRecord srv
               in mDnsService.lookup<SrvResourceRecord>(
                   ResourceRecordQuery.service(ptr.domainName))) {
-            await for (IPAddressResourceRecord _
+            await for (IPAddressResourceRecord ip
                 in mDnsService.lookup<IPAddressResourceRecord>(
                     ResourceRecordQuery.addressIPv4(srv.target))) {
-              dnsSrvRecords[srv.name] = srv;
+              dnsSrvRecords[srv] = ip;
               if (srv.name == event.service) {
                 service = srv;
               }

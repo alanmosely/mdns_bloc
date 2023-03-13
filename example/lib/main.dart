@@ -114,10 +114,10 @@ class MyAppView extends StatelessWidget {
                                   itemBuilder: (context, index) {
                                     var keys =
                                         state.dnsSrvRecords.keys.toList();
-                                    var name =
-                                        state.dnsSrvRecords[keys[index]]?.name;
+                                    var name = keys[index].name;
                                     return ListTile(
-                                      title: Text(name ?? ''),
+                                      title: Text(
+                                          '$name - ${state.dnsSrvRecords[keys[index]]?.address.address}'),
                                       tileColor: name == state.service?.name
                                           ? Colors.lightBlue
                                           : null,

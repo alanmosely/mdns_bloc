@@ -35,7 +35,7 @@ void main() {
         const MDnsState(
           status: MDnsStatus.initial,
           dnsPtrRecords: <PtrResourceRecord>[],
-          dnsSrvRecords: <String, SrvResourceRecord>{},
+          dnsSrvRecords: <SrvResourceRecord, IPAddressResourceRecord>{},
           errorMsg: '',
         )
       ],

@@ -16,21 +16,21 @@ class MDnsState extends Equatable {
   const MDnsState({
     this.status = MDnsStatus.initial,
     this.dnsPtrRecords = const <PtrResourceRecord>[],
-    this.dnsSrvRecords = const <String, SrvResourceRecord>{},
+    this.dnsSrvRecords = const <SrvResourceRecord, IPAddressResourceRecord>{},
     this.service,
     this.errorMsg = "",
   });
 
   final MDnsStatus status;
   final List<PtrResourceRecord> dnsPtrRecords;
-  final Map<String, SrvResourceRecord> dnsSrvRecords;
+  final Map<SrvResourceRecord, IPAddressResourceRecord> dnsSrvRecords;
   final SrvResourceRecord? service;
   final String errorMsg;
 
   MDnsState copyWith({
     MDnsStatus? status,
     List<PtrResourceRecord>? dnsPtrRecords,
-    Map<String, SrvResourceRecord>? dnsSrvRecords,
+    Map<SrvResourceRecord, IPAddressResourceRecord>? dnsSrvRecords,
     SrvResourceRecord? service,
     String? errorMsg,
   }) {
