@@ -13,3 +13,7 @@
 ## 0.0.4
 
 * Alpha: Add IP address
+
+## 0.0.5
+
+* Alpha: Add MDnsEventStopSearch

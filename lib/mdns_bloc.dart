@@ -11,6 +11,7 @@ import 'mdns_state.dart';
 class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
   MDnsBloc() : super(const MDnsState()) {
     on<MDnsEventStartSearch>(_onStart);
+    on<MDnsEventStopSearch>(_onStop);
   }
 
   /// A late final variable that is assigned to the instance of the MDnsClient class.
@@ -59,22 +60,22 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
       }
 
       if (dnsSrvRecords.isNotEmpty) {
-        if (service != null) {
-          emit(
-            state.copyWith(
-              status: MDnsStatus.mDnsMatch,
-              dnsPtrRecords: dnsPtrRecords,
-              dnsSrvRecords: dnsSrvRecords,
-              service: service,
-            ),
-          );
-        } else {
+        if (service == null) {
           emit(
             state.copyWith(
               status: MDnsStatus.mDnsFound,
               dnsPtrRecords: dnsPtrRecords,
               dnsSrvRecords: dnsSrvRecords,
               service: null,
+            ),
+          );
+        } else {
+          emit(
+            state.copyWith(
+              status: MDnsStatus.mDnsMatch,
+              dnsPtrRecords: dnsPtrRecords,
+              dnsSrvRecords: dnsSrvRecords,
+              service: service,
             ),
           );
         }
@@ -91,5 +92,19 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     } finally {
       mDnsService.stop();
     }
+  }
+
+  /// _onStop() is a function that is called when the MDnsEventStopSearch event is emitted
+  ///
+  /// Args:
+  ///  event (MDnsEventStopSearch): This is the event that was emitted by the UI
+  /// emit (Emitter<MDnsState>): This is the function that you use to emit a new state
+  Future<void> _onStop(
+    MDnsEventStopSearch event,
+    Emitter<MDnsState> emit,
+  ) async {
+    emit(
+      const MDnsState(status: MDnsStatus.mDnsScanned),
+    );
   }
 }

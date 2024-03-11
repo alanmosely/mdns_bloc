@@ -39,10 +39,10 @@ class MyAppView extends StatelessWidget {
                   body: SafeArea(
                       child: Container(
                           padding: const EdgeInsets.all(12.0),
-                          child: Center(
+                          child: const Center(
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
-                              children: const [
+                              children: [
                                 SizedBox(
                                   width: 60,
                                   height: 60,

@@ -18,3 +18,11 @@ class MDnsEventStartSearch extends MDnsEvent {
   @override
   List<Object?> get props => [serverPointer, service];
 }
+
+/// A class that allows you to stop the discovery process
+class MDnsEventStopSearch extends MDnsEvent {
+  const MDnsEventStopSearch();
+
+  @override
+  List<Object?> get props => [];
+}
