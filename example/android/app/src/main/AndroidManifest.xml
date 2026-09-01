@@ -1,6 +1,11 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    package="com.example.example">
-   <application
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- Required to send and receive multicast DNS packets. Some devices
+         additionally require the app to acquire a multicast lock before
+         mDNS responses are delivered. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE"/>
+    <application
         android:label="example"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

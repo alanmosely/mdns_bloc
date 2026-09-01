@@ -1,26 +1,56 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
+import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mdns_bloc/mdns_bloc.dart';
 import 'package:mdns_bloc_example/main.dart';
+import 'package:mocktail/mocktail.dart';
+
+class _MockMDnsClient extends Mock implements MDnsClient {}
 
 void main() {
-  testWidgets('Verify Platform version', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
-
-    // Verify that platform version is retrieved.
-    expect(
-      find.byWidgetPredicate(
-        (Widget widget) =>
-            widget is Text && widget.data!.startsWith('Running on:'),
-      ),
-      findsOneWidget,
+  setUpAll(() {
+    registerFallbackValue(
+      ResourceRecordQuery.serverPointer('$defaultServiceType.local'),
     );
+    registerFallbackValue(Duration.zero);
+  });
+
+  testWidgets('shows a spinner while searching and a message when done',
+      (WidgetTester tester) async {
+    final StreamController<PtrResourceRecord> ptrRecords =
+        StreamController<PtrResourceRecord>();
+    final _MockMDnsClient client = _MockMDnsClient();
+    when(() => client.start()).thenAnswer((_) async {});
+    when(
+      () => client.lookup<PtrResourceRecord>(
+        any(),
+        timeout: any(named: 'timeout'),
+      ),
+    ).thenAnswer((_) => ptrRecords.stream);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BlocProvider(
+          create: (_) => MDnsBloc(clientFactory: () => client)
+            ..add(const MDnsEventStartSearch(
+              serverPointer: defaultServiceType,
+              retries: 0,
+            )),
+          child: const MDnsSearchPage(),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.text('Searching...'), findsOneWidget);
+
+    // Ending the PTR stream lets the search complete without results.
+    await ptrRecords.close();
+    await tester.pumpAndSettle();
+
+    expect(find.text('No services found'), findsOneWidget);
   });
 }

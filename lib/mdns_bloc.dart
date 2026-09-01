@@ -1,110 +1,17 @@
-import 'dart:async';
+/// Bloc wrapper over `multicast_dns` which performs service discovery over
+/// multicast DNS (mDNS), Bonjour and Avahi.
+library;
 
-import 'package:flutter_bloc/flutter_bloc.dart';
-import 'package:mdns_bloc/mdns_constants.dart';
-import 'package:multicast_dns/multicast_dns.dart';
+export 'package:multicast_dns/multicast_dns.dart'
+    show
+        IPAddressResourceRecord,
+        MDnsClient,
+        PtrResourceRecord,
+        ResourceRecord,
+        ResourceRecordQuery,
+        SrvResourceRecord;
 
-import 'mdns_event.dart';
-import 'mdns_service.dart';
-import 'mdns_state.dart';
-
-class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
-  MDnsBloc() : super(const MDnsState()) {
-    on<MDnsEventStartSearch>(_onStart);
-    on<MDnsEventStopSearch>(_onStop);
-  }
-
-  /// A late final variable that is assigned to the instance of the MDnsClient class.
-  late final MDnsClient mDnsService = MDnsService();
-
-  /// _onStart() is a function that is called when the MDnsEventStartSearch event is emitted
-  ///
-  /// Args:
-  ///   event (MDnsEventStartSearch): This is the event that was emitted by the UI
-  ///   emit (Emitter<MDnsState>): This is the function that you use to emit a new state
-  Future<void> _onStart(
-    MDnsEventStartSearch event,
-    Emitter<MDnsState> emit,
-  ) async {
-    try {
-      emit(
-        const MDnsState(),
-      );
-
-      await mDnsService.start();
-      int retries = 0;
-      List<PtrResourceRecord> dnsPtrRecords = <PtrResourceRecord>[];
-      Map<SrvResourceRecord, IPAddressResourceRecord> dnsSrvRecords =
-          <SrvResourceRecord, IPAddressResourceRecord>{};
-      SrvResourceRecord? service;
-
-      while (dnsSrvRecords.isEmpty && retries <= RETRIES) {
-        await for (PtrResourceRecord ptr
-            in mDnsService.lookup<PtrResourceRecord>(
-                ResourceRecordQuery.serverPointer(event.serverPointer))) {
-          dnsPtrRecords.add(ptr);
-          await for (SrvResourceRecord srv
-              in mDnsService.lookup<SrvResourceRecord>(
-                  ResourceRecordQuery.service(ptr.domainName))) {
-            await for (IPAddressResourceRecord ip
-                in mDnsService.lookup<IPAddressResourceRecord>(
-                    ResourceRecordQuery.addressIPv4(srv.target))) {
-              dnsSrvRecords[srv] = ip;
-              if (srv.name == event.service) {
-                service = srv;
-              }
-            }
-          }
-        }
-        retries++;
-      }
-
-      if (dnsSrvRecords.isNotEmpty) {
-        if (service == null) {
-          emit(
-            state.copyWith(
-              status: MDnsStatus.mDnsFound,
-              dnsPtrRecords: dnsPtrRecords,
-              dnsSrvRecords: dnsSrvRecords,
-              service: null,
-            ),
-          );
-        } else {
-          emit(
-            state.copyWith(
-              status: MDnsStatus.mDnsMatch,
-              dnsPtrRecords: dnsPtrRecords,
-              dnsSrvRecords: dnsSrvRecords,
-              service: service,
-            ),
-          );
-        }
-      } else {
-        emit(
-          state.copyWith(
-            status: MDnsStatus.mDnsScanned,
-            dnsPtrRecords: dnsPtrRecords,
-          ),
-        );
-      }
-    } catch (e) {
-      emit(state.copyWith(status: MDnsStatus.error, errorMsg: e.toString()));
-    } finally {
-      mDnsService.stop();
-    }
-  }
-
-  /// _onStop() is a function that is called when the MDnsEventStopSearch event is emitted
-  ///
-  /// Args:
-  ///  event (MDnsEventStopSearch): This is the event that was emitted by the UI
-  /// emit (Emitter<MDnsState>): This is the function that you use to emit a new state
-  Future<void> _onStop(
-    MDnsEventStopSearch event,
-    Emitter<MDnsState> emit,
-  ) async {
-    emit(
-      const MDnsState(status: MDnsStatus.mDnsScanned),
-    );
-  }
-}
+export 'src/mdns_bloc.dart';
+export 'src/mdns_constants.dart';
+export 'src/mdns_event.dart';
+export 'src/mdns_state.dart';

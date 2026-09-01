@@ -47,7 +47,15 @@
 		<true/>
 		<key>UIApplicationSupportsIndirectInputEvents</key>
 		<true/>
-		<key>NSBluetoothAlwaysUsageDescription</key>
-		<string>Our app uses bluetooth to find, connect and transfer data between different devices</string>
+		<!-- Note: on physical iOS 14+ devices, mDNS discovery additionally
+		     requires the restricted com.apple.developer.networking.multicast
+		     entitlement (requested from Apple); the simulator works without
+		     it. See the package README's platform setup section. -->
+		<key>NSLocalNetworkUsageDescription</key>
+		<string>This app uses the local network to discover services advertised over mDNS/Bonjour.</string>
+		<key>NSBonjourServices</key>
+		<array>
+			<string>_http._tcp</string>
+		</array>
 	</dict>
 </plist>
