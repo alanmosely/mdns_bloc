@@ -1,0 +1,18 @@
+# Publishes the package to pub.dev when a version tag (e.g. v0.2.0) is
+# pushed, using pub.dev's GitHub Actions (OIDC) automated publishing.
+#
+# Requires one-time setup on pub.dev: package Admin tab -> Automated
+# publishing -> Enable publishing from GitHub Actions, with repository
+# alanmosely/mdns_bloc and tag pattern v{{version}}.
+name: publish
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+jobs:
+  publish:
+    permissions:
+      id-token: write # Required for OIDC authentication with pub.dev.
+    uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
