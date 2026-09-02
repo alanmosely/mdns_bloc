@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.0
+
+* TXT records are now resolved for each discovered service and exposed via
+  `MDnsState.dnsTxtRecords`, keyed by service instance name and
+  deduplicated by text content.
+* Results are emitted progressively: while a search runs, each
+  `MDnsStatus.searching` state carries a snapshot of the records discovered
+  so far, and a stopped search retains everything found before the
+  cancellation. Progressive states hold defensive copies, so earlier
+  snapshots are never mutated by later discoveries.
+* The example app shows results live while scanning and displays TXT data.
+
 ## 0.1.0
 
 Breaking changes:

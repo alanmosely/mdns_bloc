@@ -40,12 +40,20 @@ IPAddressResourceRecord _ip(String target, String address) =>
       address: InternetAddress(address),
     );
 
+TxtResourceRecord _txt(
+  String instance,
+  String text, {
+  int validUntil = _validUntil,
+}) =>
+    TxtResourceRecord('$instance.$_type.local', validUntil, text: text);
+
 /// Builds a mock client whose lookups answer with the given streams; lookups
 /// without a stream complete empty.
 MockMDnsClient _clientWith({
   Stream<PtrResourceRecord> Function()? ptr,
   Stream<SrvResourceRecord> Function()? srv,
   Stream<IPAddressResourceRecord> Function(ResourceRecordQuery query)? ip,
+  Stream<TxtResourceRecord> Function()? txt,
 }) {
   final MockMDnsClient client = MockMDnsClient();
   when(() => client.start()).thenAnswer((_) async {});
@@ -74,6 +82,14 @@ MockMDnsClient _clientWith({
     (Invocation invocation) =>
         ip?.call(invocation.positionalArguments.first as ResourceRecordQuery) ??
         const Stream<IPAddressResourceRecord>.empty(),
+  );
+  when(
+    () => client.lookup<TxtResourceRecord>(
+      any(),
+      timeout: any(named: 'timeout'),
+    ),
+  ).thenAnswer(
+    (_) => txt?.call() ?? const Stream<TxtResourceRecord>.empty(),
   );
   return client;
 }
@@ -300,6 +316,233 @@ void main() {
           timeout: any(named: 'timeout'),
         ),
       ).called(1);
+
+      await bloc.close();
+    });
+
+    test('resolves TXT records keyed by lowercased instance name, deduplicated',
+        () async {
+      final SrvResourceRecord srv = _srv('printer');
+      // The PTR announces a differently-cased instance name; the TXT map key
+      // must still line up with srv.name via lowercasing.
+      final PtrResourceRecord ptr = _ptr('Printer');
+      final MockMDnsClient client = _clientWith(
+        ptr: () => Stream<PtrResourceRecord>.fromIterable(<PtrResourceRecord>[
+          ptr,
+        ]),
+        srv: () => Stream<SrvResourceRecord>.fromIterable(<SrvResourceRecord>[
+          srv,
+        ]),
+        txt: () => Stream<TxtResourceRecord>.fromIterable(<TxtResourceRecord>[
+          _txt('printer', 'path=/index.html'),
+          _txt('printer', 'path=/index.html', validUntil: _validUntil + 1),
+          _txt('printer', 'version=2'),
+        ]),
+      );
+      final MDnsBloc bloc = MDnsBloc(clientFactory: () => client);
+      final Future<MDnsState> done = bloc.stream.firstWhere(
+        (MDnsState state) => state.status != MDnsStatus.searching,
+      );
+
+      const Duration timeout = Duration(milliseconds: 1234);
+      bloc.add(
+          const MDnsEventStartSearch(serverPointer: _type, timeout: timeout));
+      final MDnsState result = await done;
+
+      expect(result.status, MDnsStatus.mDnsFound);
+      expect(result.dnsTxtRecords.keys.single, srv.name.toLowerCase());
+      expect(
+        result.dnsTxtRecords[srv.name.toLowerCase()]!
+            .map((TxtResourceRecord record) => record.text),
+        <String>['path=/index.html', 'version=2'],
+      );
+
+      // The TXT query must ask for the PTR's domain name (original case)
+      // with the event's timeout.
+      final List<dynamic> txtArgs = verify(
+        () => client.lookup<TxtResourceRecord>(
+          captureAny(),
+          timeout: captureAny(named: 'timeout'),
+        ),
+      ).captured;
+      final ResourceRecordQuery txtQuery = txtArgs[0] as ResourceRecordQuery;
+      expect(txtQuery.fullyQualifiedName, ptr.domainName);
+      expect(txtQuery.resourceRecordType, ResourceRecordType.text);
+      expect(txtArgs[1], timeout);
+
+      await bloc.close();
+    });
+
+    test('emits progressive snapshots while the search resolves', () async {
+      // Broadcast controllers: a second PTR triggers additional SRV/TXT
+      // lookup calls, which listen to these same streams again.
+      final StreamController<PtrResourceRecord> ptrController =
+          StreamController<PtrResourceRecord>.broadcast();
+      final StreamController<SrvResourceRecord> srvController =
+          StreamController<SrvResourceRecord>.broadcast();
+      final StreamController<TxtResourceRecord> txtController =
+          StreamController<TxtResourceRecord>.broadcast();
+      final StreamController<IPAddressResourceRecord> ipController =
+          StreamController<IPAddressResourceRecord>.broadcast();
+      final MockMDnsClient client = _clientWith(
+        ptr: () => ptrController.stream,
+        srv: () => srvController.stream,
+        txt: () => txtController.stream,
+        ip: (ResourceRecordQuery query) =>
+            query.resourceRecordType == ResourceRecordType.addressIPv4
+                ? ipController.stream
+                : const Stream<IPAddressResourceRecord>.empty(),
+      );
+      final MDnsBloc bloc = MDnsBloc(clientFactory: () => client);
+      final List<MDnsState> states = <MDnsState>[];
+      final StreamSubscription<MDnsState> subscription =
+          bloc.stream.listen(states.add);
+
+      bloc.add(const MDnsEventStartSearch(serverPointer: _type, retries: 0));
+      await pumpEventQueue();
+      expect(states.last, const MDnsState(status: MDnsStatus.searching));
+
+      final PtrResourceRecord ptr = _ptr('printer');
+      ptrController.add(ptr);
+      await pumpEventQueue();
+      expect(states.last.status, MDnsStatus.searching);
+      expect(states.last.dnsPtrRecords, <PtrResourceRecord>[ptr]);
+      expect(states.last.dnsSrvRecords, isEmpty);
+      final MDnsState ptrSnapshot = states.last;
+
+      final SrvResourceRecord srv = _srv('printer');
+      srvController.add(srv);
+      await pumpEventQueue();
+      expect(states.last.status, MDnsStatus.searching);
+      expect(states.last.dnsSrvRecords.keys.single, srv);
+      expect(states.last.dnsSrvRecords[srv], isEmpty);
+      final MDnsState srvSnapshot = states.last;
+
+      final TxtResourceRecord txt = _txt('printer', 'path=/');
+      txtController.add(txt);
+      await pumpEventQueue();
+      expect(states.last.status, MDnsStatus.searching);
+      expect(
+        states.last.dnsTxtRecords[srv.name.toLowerCase()],
+        <TxtResourceRecord>[txt],
+      );
+
+      final IPAddressResourceRecord v4 = _ip('host.local', '192.168.1.10');
+      ipController.add(v4);
+      await pumpEventQueue();
+      expect(states.last.status, MDnsStatus.searching);
+      expect(states.last.dnsSrvRecords[srv], <IPAddressResourceRecord>[v4]);
+
+      ptrController.add(_ptr('scanner'));
+      await pumpEventQueue();
+      expect(states.last.dnsPtrRecords, hasLength(2));
+
+      // Earlier snapshots must not be mutated by later discoveries — every
+      // copied layer: the PTR list, the SRV map, its address lists, and the
+      // TXT map.
+      expect(ptrSnapshot.dnsPtrRecords, hasLength(1));
+      expect(ptrSnapshot.dnsSrvRecords, isEmpty);
+      expect(srvSnapshot.dnsSrvRecords[srv], isEmpty);
+      expect(srvSnapshot.dnsTxtRecords, isEmpty);
+      expect(srvSnapshot.dnsPtrRecords, hasLength(1));
+
+      final Future<MDnsState> done = bloc.stream.firstWhere(
+        (MDnsState state) => state.status != MDnsStatus.searching,
+      );
+      await ptrController.close();
+      await srvController.close();
+      await txtController.close();
+      await ipController.close();
+      final MDnsState result = await done;
+
+      expect(result.status, MDnsStatus.mDnsFound);
+      expect(result.dnsSrvRecords.keys.single, srv);
+      expect(result.dnsSrvRecords[srv], <IPAddressResourceRecord>[v4]);
+      expect(
+        result.dnsTxtRecords[srv.name.toLowerCase()],
+        <TxtResourceRecord>[txt],
+      );
+
+      await subscription.cancel();
+      await bloc.close();
+    });
+
+    test('a stopped search retains the records discovered so far', () async {
+      final StreamController<PtrResourceRecord> ptrController =
+          StreamController<PtrResourceRecord>();
+      final StreamController<SrvResourceRecord> srvController =
+          StreamController<SrvResourceRecord>();
+      final StreamController<TxtResourceRecord> txtController =
+          StreamController<TxtResourceRecord>();
+      final MockMDnsClient client = _clientWith(
+        ptr: () => ptrController.stream,
+        srv: () => srvController.stream,
+        txt: () => txtController.stream,
+      );
+      final MDnsBloc bloc = MDnsBloc(clientFactory: () => client);
+      final List<MDnsState> states = <MDnsState>[];
+      final StreamSubscription<MDnsState> subscription =
+          bloc.stream.listen(states.add);
+
+      bloc.add(const MDnsEventStartSearch(serverPointer: _type));
+      await pumpEventQueue();
+      final PtrResourceRecord ptr = _ptr('printer');
+      final SrvResourceRecord srv = _srv('printer');
+      final TxtResourceRecord txt = _txt('printer', 'path=/');
+      ptrController.add(ptr);
+      await pumpEventQueue();
+      srvController.add(srv);
+      txtController.add(txt);
+      await pumpEventQueue();
+      expect(states.last.dnsPtrRecords, <PtrResourceRecord>[ptr]);
+      expect(states.last.dnsSrvRecords.keys.single, srv);
+
+      bloc.add(const MDnsEventStopSearch());
+      await pumpEventQueue();
+      expect(states.last.status, MDnsStatus.stopped);
+      expect(states.last.dnsPtrRecords, <PtrResourceRecord>[ptr]);
+      expect(states.last.dnsSrvRecords.keys.single, srv);
+      expect(
+        states.last.dnsTxtRecords[srv.name.toLowerCase()],
+        <TxtResourceRecord>[txt],
+      );
+
+      await ptrController.close();
+      await srvController.close();
+      await txtController.close();
+      await pumpEventQueue();
+      expect(states.last.status, MDnsStatus.stopped);
+
+      await subscription.cancel();
+      await bloc.close();
+    });
+
+    test('retains TXT records when no SRV resolves, ending mDnsScanned',
+        () async {
+      final PtrResourceRecord ptr = _ptr('printer');
+      final MockMDnsClient client = _clientWith(
+        ptr: () => Stream<PtrResourceRecord>.fromIterable(<PtrResourceRecord>[
+          ptr,
+        ]),
+        txt: () => Stream<TxtResourceRecord>.fromIterable(<TxtResourceRecord>[
+          _txt('printer', 'path=/index.html'),
+        ]),
+      );
+      final MDnsBloc bloc = MDnsBloc(clientFactory: () => client);
+      final Future<MDnsState> done = bloc.stream.firstWhere(
+        (MDnsState state) => state.status != MDnsStatus.searching,
+      );
+
+      bloc.add(const MDnsEventStartSearch(serverPointer: _type, retries: 0));
+      final MDnsState result = await done;
+
+      expect(result.status, MDnsStatus.mDnsScanned);
+      expect(result.dnsPtrRecords, <PtrResourceRecord>[ptr]);
+      expect(
+        result.dnsTxtRecords[ptr.domainName.toLowerCase()]!
+            .map((TxtResourceRecord record) => record.text),
+        <String>['path=/index.html'],
+      );
 
       await bloc.close();
     });

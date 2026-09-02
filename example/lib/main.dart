@@ -98,72 +98,121 @@ class _MDnsSearchBody extends StatelessWidget {
   Widget build(BuildContext context) {
     switch (state.status) {
       case MDnsStatus.initial:
+        return const _Spinner();
       case MDnsStatus.searching:
-        return const Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: <Widget>[
-              SizedBox(
-                width: 60,
-                height: 60,
-                child: CircularProgressIndicator(),
-              ),
-              Padding(
-                padding: EdgeInsets.only(top: 16),
-                child: Text('Searching...'),
-              ),
-            ],
-          ),
+        // Results stream into the state while the search runs; show them as
+        // they arrive, with a progress bar while the scan is still going.
+        if (state.dnsSrvRecords.isEmpty) {
+          return const _Spinner();
+        }
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            const LinearProgressIndicator(),
+            Expanded(child: _ServiceList(state: state)),
+          ],
         );
       case MDnsStatus.mDnsScanned:
         return const Center(child: Text('No services found'));
       case MDnsStatus.stopped:
-        return const Center(child: Text('Search stopped'));
+        if (state.dnsSrvRecords.isEmpty) {
+          return const Center(child: Text('Search stopped'));
+        }
+        return _ServiceList(state: state);
       case MDnsStatus.mDnsFound:
       case MDnsStatus.mDnsMatch:
-        final List<SrvResourceRecord> services =
-            state.dnsSrvRecords.keys.toList();
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                'Detected ${services.length} '
-                'service${services.length == 1 ? '' : 's'}:',
-              ),
-            ),
-            Expanded(
-              child: ListView.builder(
-                itemCount: services.length,
-                itemBuilder: (BuildContext context, int index) {
-                  final SrvResourceRecord service = services[index];
-                  final List<IPAddressResourceRecord> addresses =
-                      state.dnsSrvRecords[service] ??
-                          const <IPAddressResourceRecord>[];
-                  final String addressText = addresses.isEmpty
-                      ? 'no address resolved'
-                      : addresses
-                          .map((IPAddressResourceRecord record) =>
-                              record.address.address)
-                          .join(', ');
-                  return ListTile(
-                    title: Text(service.name),
-                    subtitle: Text('$addressText — port ${service.port}'),
-                    tileColor: service.name == state.service?.name
-                        ? Colors.lightBlue
-                        : null,
-                  );
-                },
-              ),
-            ),
-          ],
-        );
+        return _ServiceList(state: state);
       case MDnsStatus.error:
         return Text(
           'There was an error in scanning: ${state.errorMsg}\n\n'
           'Final state was: $state',
         );
     }
+  }
+}
+
+class _Spinner extends StatelessWidget {
+  const _Spinner();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: <Widget>[
+          SizedBox(
+            width: 60,
+            height: 60,
+            child: CircularProgressIndicator(),
+          ),
+          Padding(
+            padding: EdgeInsets.only(top: 16),
+            child: Text('Searching...'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ServiceList extends StatelessWidget {
+  const _ServiceList({required this.state});
+
+  final MDnsState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final List<SrvResourceRecord> services = state.dnsSrvRecords.keys.toList();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: <Widget>[
+        Padding(
+          padding: const EdgeInsets.all(12),
+          child: Text(
+            'Detected ${services.length} '
+            'service${services.length == 1 ? '' : 's'}:',
+          ),
+        ),
+        Expanded(
+          child: ListView.builder(
+            itemCount: services.length,
+            itemBuilder: (BuildContext context, int index) {
+              final SrvResourceRecord service = services[index];
+              final List<IPAddressResourceRecord> addresses =
+                  state.dnsSrvRecords[service] ??
+                      const <IPAddressResourceRecord>[];
+              final String addressText = addresses.isEmpty
+                  ? 'no address resolved'
+                  : addresses
+                      .map((IPAddressResourceRecord record) =>
+                          record.address.address)
+                      .join(', ');
+              final List<TxtResourceRecord> txtRecords =
+                  state.dnsTxtRecords[service.name.toLowerCase()] ??
+                      const <TxtResourceRecord>[];
+              // A TXT record's text holds one line per key=value string, and
+              // services without metadata publish an empty TXT record, so
+              // flatten to one line and skip empty entries.
+              final String txtText = txtRecords
+                  .map((TxtResourceRecord record) =>
+                      record.text.trim().replaceAll('\n', '; '))
+                  .where((String text) => text.isNotEmpty)
+                  .join('; ');
+              final String subtitle = txtText.isEmpty
+                  ? '$addressText — port ${service.port}'
+                  : '$addressText — port ${service.port}\n$txtText';
+              return ListTile(
+                title: Text(service.name),
+                subtitle: Text(subtitle),
+                isThreeLine: txtText.isNotEmpty,
+                tileColor: service.name == state.service?.name
+                    ? Colors.lightBlue
+                    : null,
+              );
+            },
+          ),
+        ),
+      ],
+    );
   }
 }

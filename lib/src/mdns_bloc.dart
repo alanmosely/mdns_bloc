@@ -11,9 +11,11 @@ import 'mdns_state.dart';
 /// A [Bloc] that performs service discovery over multicast DNS (mDNS).
 ///
 /// Add an [MDnsEventStartSearch] to begin a search; progress and results are
-/// reported through [MDnsState]. Adding another [MDnsEventStartSearch] while
+/// reported through [MDnsState]. While the search runs, records are emitted
+/// progressively: each `MDnsStatus.searching` state carries a snapshot of
+/// everything discovered so far. Adding another [MDnsEventStartSearch] while
 /// a search is in flight cancels it and starts over, and an
-/// [MDnsEventStopSearch] cancels it outright.
+/// [MDnsEventStopSearch] cancels it outright, retaining what was found.
 ///
 /// Every search runs on its own [MDnsClient], created per search and stopped
 /// when the search completes, is cancelled, or the bloc is closed. Pass a
@@ -58,6 +60,31 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     final List<PtrResourceRecord> ptrRecords = <PtrResourceRecord>[];
     final Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords =
         <SrvResourceRecord, List<IPAddressResourceRecord>>{};
+    final Map<String, List<TxtResourceRecord>> txtRecords =
+        <String, List<TxtResourceRecord>>{};
+
+    // Emits a searching-status snapshot of everything discovered so far.
+    // The collections are copied because the scan keeps mutating them after
+    // the state is emitted.
+    void emitProgress() {
+      if (_isStale(generation, emit)) {
+        return;
+      }
+      emit(MDnsState(
+        status: MDnsStatus.searching,
+        dnsPtrRecords: List<PtrResourceRecord>.of(ptrRecords),
+        dnsSrvRecords: <SrvResourceRecord, List<IPAddressResourceRecord>>{
+          for (final MapEntry<SrvResourceRecord,
+              List<IPAddressResourceRecord>> entry in srvRecords.entries)
+            entry.key: List<IPAddressResourceRecord>.of(entry.value),
+        },
+        dnsTxtRecords: <String, List<TxtResourceRecord>>{
+          for (final MapEntry<String, List<TxtResourceRecord>> entry
+              in txtRecords.entries)
+            entry.key: List<TxtResourceRecord>.of(entry.value),
+        },
+      ));
+    }
 
     try {
       await client.start();
@@ -86,9 +113,17 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
           }
           if (knownPtrNames.add(ptr.domainName)) {
             ptrRecords.add(ptr);
+            emitProgress();
           }
           resolutions.add(
-            _resolveService(client, ptr.domainName, event.timeout, srvRecords),
+            _resolveService(
+              client,
+              ptr.domainName,
+              event.timeout,
+              srvRecords,
+              txtRecords,
+              emitProgress,
+            ),
           );
         }
         await Future.wait(resolutions);
@@ -103,6 +138,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
         emit(MDnsState(
           status: MDnsStatus.mDnsScanned,
           dnsPtrRecords: ptrRecords,
+          dnsTxtRecords: txtRecords,
         ));
       } else {
         final SrvResourceRecord? match = _findMatch(srvRecords, event.service);
@@ -110,6 +146,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
           status: match == null ? MDnsStatus.mDnsFound : MDnsStatus.mDnsMatch,
           dnsPtrRecords: ptrRecords,
           dnsSrvRecords: srvRecords,
+          dnsTxtRecords: txtRecords,
           service: match,
         ));
       }
@@ -121,6 +158,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
         status: MDnsStatus.error,
         dnsPtrRecords: ptrRecords,
         dnsSrvRecords: srvRecords,
+        dnsTxtRecords: txtRecords,
         errorMsg: error.toString(),
       ));
     } finally {
@@ -149,13 +187,31 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     return super.close();
   }
 
-  /// Looks up the SRV records behind [domainName] and the addresses of their
-  /// target hosts, adding what it finds to [srvRecords].
+  /// Looks up the SRV and TXT records behind [domainName] and the addresses
+  /// of the SRV targets, adding what it finds to [srvRecords] and
+  /// [txtRecords] and reporting each addition through [onProgress].
   Future<void> _resolveService(
     MDnsClient client,
     String domainName,
     Duration timeout,
     Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords,
+    Map<String, List<TxtResourceRecord>> txtRecords,
+    void Function() onProgress,
+  ) async {
+    await Future.wait(<Future<void>>[
+      _resolveSrv(client, domainName, timeout, srvRecords, onProgress),
+      _collectTxt(client, domainName, timeout, txtRecords, onProgress),
+    ]);
+  }
+
+  /// Looks up the SRV records behind [domainName] and the addresses of their
+  /// target hosts, adding what it finds to [srvRecords].
+  Future<void> _resolveSrv(
+    MDnsClient client,
+    String domainName,
+    Duration timeout,
+    Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords,
+    void Function() onProgress,
   ) async {
     try {
       final List<Future<void>> addressLookups = <Future<void>>[];
@@ -178,8 +234,9 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
         final List<IPAddressResourceRecord> addresses =
             <IPAddressResourceRecord>[];
         srvRecords[srv] = addresses;
+        onProgress();
         addressLookups.add(
-          _resolveAddresses(client, srv.target, timeout, addresses),
+          _resolveAddresses(client, srv.target, timeout, addresses, onProgress),
         );
       }
       await Future.wait(addressLookups);
@@ -189,12 +246,47 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     }
   }
 
+  /// Collects the TXT records for [domainName] into [txtRecords], keyed by
+  /// service instance name and deduplicated by text content.
+  Future<void> _collectTxt(
+    MDnsClient client,
+    String domainName,
+    Duration timeout,
+    Map<String, List<TxtResourceRecord>> txtRecords,
+    void Function() onProgress,
+  ) async {
+    try {
+      // DNS names are case-insensitive and a responder's SRV owner name may
+      // differ in case from its PTR rdata, so normalize the key to keep the
+      // map addressable via SrvResourceRecord.name.
+      final String key = domainName.toLowerCase();
+      await for (final TxtResourceRecord txt
+          in client.lookup<TxtResourceRecord>(
+        ResourceRecordQuery.text(domainName),
+        timeout: timeout,
+      )) {
+        final List<TxtResourceRecord> records = txtRecords.putIfAbsent(
+          key,
+          () => <TxtResourceRecord>[],
+        );
+        if (records.any((TxtResourceRecord known) => known.text == txt.text)) {
+          continue;
+        }
+        records.add(txt);
+        onProgress();
+      }
+    } on StateError {
+      // The client was stopped while this lookup was in flight.
+    }
+  }
+
   /// Resolves the IPv4 and IPv6 addresses of [target] into [addresses].
   Future<void> _resolveAddresses(
     MDnsClient client,
     String target,
     Duration timeout,
     List<IPAddressResourceRecord> addresses,
+    void Function() onProgress,
   ) async {
     try {
       final Set<String> seenAddresses = <String>{};
@@ -205,6 +297,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
           timeout,
           addresses,
           seenAddresses,
+          onProgress,
         ),
         _collectAddresses(
           client,
@@ -212,6 +305,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
           timeout,
           addresses,
           seenAddresses,
+          onProgress,
         ),
       ]);
     } on StateError {
@@ -225,11 +319,13 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     Duration timeout,
     List<IPAddressResourceRecord> addresses,
     Set<String> seenAddresses,
+    void Function() onProgress,
   ) async {
     await for (final IPAddressResourceRecord record
         in client.lookup<IPAddressResourceRecord>(query, timeout: timeout)) {
       if (seenAddresses.add(record.address.address)) {
         addresses.add(record);
+        onProgress();
       }
     }
   }

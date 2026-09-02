@@ -6,7 +6,8 @@ enum MDnsStatus {
   /// No search has been started yet.
   initial,
 
-  /// A search is currently in flight.
+  /// A search is currently in flight. States with this status carry the
+  /// records discovered so far, growing as the search resolves them.
   searching,
 
   /// A search completed without discovering any services.
@@ -19,7 +20,8 @@ enum MDnsStatus {
   /// A search discovered a service matching the requested instance name.
   mDnsMatch,
 
-  /// The search in flight was cancelled by an `MDnsEventStopSearch`.
+  /// The search in flight was cancelled by an `MDnsEventStopSearch`. The
+  /// state retains the records discovered before the cancellation.
   stopped,
 
   /// The search failed; see [MDnsState.errorMsg].
@@ -33,6 +35,7 @@ class MDnsState extends Equatable {
     this.dnsPtrRecords = const <PtrResourceRecord>[],
     this.dnsSrvRecords =
         const <SrvResourceRecord, List<IPAddressResourceRecord>>{},
+    this.dnsTxtRecords = const <String, List<TxtResourceRecord>>{},
     this.service,
     this.errorMsg = '',
   });
@@ -46,6 +49,12 @@ class MDnsState extends Equatable {
   /// The SRV records discovered, each mapped to the IPv4/IPv6 address records
   /// resolved for its target host (an empty list when no address resolved).
   final Map<SrvResourceRecord, List<IPAddressResourceRecord>> dnsSrvRecords;
+
+  /// The TXT records discovered, keyed by *lowercased* service instance name
+  /// (DNS names are case-insensitive): look up an instance's TXT data with
+  /// `dnsTxtRecords[srv.name.toLowerCase()]`. Instances without TXT data
+  /// have no entry.
+  final Map<String, List<TxtResourceRecord>> dnsTxtRecords;
 
   /// The record matching `MDnsEventStartSearch.service`, when one was found.
   final SrvResourceRecord? service;
@@ -63,6 +72,7 @@ class MDnsState extends Equatable {
     MDnsStatus? status,
     List<PtrResourceRecord>? dnsPtrRecords,
     Map<SrvResourceRecord, List<IPAddressResourceRecord>>? dnsSrvRecords,
+    Map<String, List<TxtResourceRecord>>? dnsTxtRecords,
     Object? service = _unset,
     String? errorMsg,
   }) {
@@ -70,6 +80,7 @@ class MDnsState extends Equatable {
       status: status ?? this.status,
       dnsPtrRecords: dnsPtrRecords ?? this.dnsPtrRecords,
       dnsSrvRecords: dnsSrvRecords ?? this.dnsSrvRecords,
+      dnsTxtRecords: dnsTxtRecords ?? this.dnsTxtRecords,
       service: identical(service, _unset)
           ? this.service
           : service as SrvResourceRecord?,
@@ -82,10 +93,17 @@ class MDnsState extends Equatable {
     return 'MDnsState { status: $status, '
         'dnsPtrRecords: ${dnsPtrRecords.length}, '
         'dnsSrvRecords: ${dnsSrvRecords.length}, '
+        'dnsTxtRecords: ${dnsTxtRecords.length}, '
         'service: $service, errorMsg: $errorMsg }';
   }
 
   @override
-  List<Object?> get props =>
-      <Object?>[status, dnsPtrRecords, dnsSrvRecords, service, errorMsg];
+  List<Object?> get props => <Object?>[
+        status,
+        dnsPtrRecords,
+        dnsSrvRecords,
+        dnsTxtRecords,
+        service,
+        errorMsg,
+      ];
 }

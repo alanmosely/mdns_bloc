@@ -9,7 +9,8 @@ export 'package:multicast_dns/multicast_dns.dart'
         PtrResourceRecord,
         ResourceRecord,
         ResourceRecordQuery,
-        SrvResourceRecord;
+        SrvResourceRecord,
+        TxtResourceRecord;
 
 export 'src/mdns_bloc.dart';
 export 'src/mdns_constants.dart';

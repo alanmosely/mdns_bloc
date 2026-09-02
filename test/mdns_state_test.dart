@@ -44,6 +44,18 @@ void main() {
       expect(state.copyWith(status: MDnsStatus.stopped).service, service);
     });
 
+    test('copyWith keeps record collections when omitted', () {
+      final MDnsState state = MDnsState(
+        dnsTxtRecords: <String, List<TxtResourceRecord>>{
+          'a._http._tcp.local': <TxtResourceRecord>[
+            TxtResourceRecord('a._http._tcp.local', 0, text: 'path=/'),
+          ],
+        },
+      );
+      final MDnsState copy = state.copyWith(status: MDnsStatus.stopped);
+      expect(copy.dnsTxtRecords, state.dnsTxtRecords);
+    });
+
     test('copyWith clears service when explicitly passed null', () {
       final MDnsState state = MDnsState(service: _srv('a._http._tcp.local'));
       expect(state.copyWith(service: null).service, isNull);

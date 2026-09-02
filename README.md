@@ -15,11 +15,13 @@ to react to states.
 ## Features
 
 * Searches for services by type (e.g. `_http._tcp`), resolving PTR → SRV →
-  A/AAAA records, with duplicates removed.
+  A/AAAA and TXT records, with duplicates removed.
+* Progressive results: while the search runs, each `searching` state carries
+  a snapshot of the records discovered so far.
 * Optionally matches a specific service instance name (case-insensitively).
 * Configurable per-lookup timeout and retry count.
-* Cancellable: stop a search with an event, or start a new search to
-  supersede the one in flight.
+* Cancellable: stop a search with an event (keeping what was found), or
+  start a new search to supersede the one in flight.
 * Each search runs on its own `MDnsClient`, injectable for tests.
 
 ## Usage
@@ -72,16 +74,19 @@ old one.
 | `MDnsStatus`  | Meaning                                                        |
 | ------------- | -------------------------------------------------------------- |
 | `initial`     | No search started yet.                                         |
-| `searching`   | A search is in flight.                                         |
+| `searching`   | A search is in flight; the state carries the records discovered so far. |
 | `mDnsScanned` | The search completed without discovering services.             |
 | `mDnsFound`   | Services were discovered (no instance name matched/requested). |
 | `mDnsMatch`   | A service matching the requested instance name was found; see `state.service`. |
-| `stopped`     | The search was cancelled by `MDnsEventStopSearch`.             |
+| `stopped`     | The search was cancelled by `MDnsEventStopSearch`; records found before the cancellation are retained. |
 | `error`       | The search failed; see `state.errorMsg`.                       |
 
 Discovered services are in `state.dnsSrvRecords`, a map from each
 `SrvResourceRecord` to the list of `IPAddressResourceRecord`s (IPv4 and IPv6)
 resolved for its target host — the list is empty when no address resolved.
+TXT records are in `state.dnsTxtRecords`, keyed by *lowercased* service
+instance name (DNS names are case-insensitive), so look them up with
+`state.dnsTxtRecords[srv.name.toLowerCase()]`.
 
 ## Platform setup
 
