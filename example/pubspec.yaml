@@ -26,6 +26,8 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   mocktail: ^1.0.0
+  # The widget test fakes the mDNS client with raw resource records.
+  multicast_dns: ^0.3.3
 
 flutter:
   uses-material-design: true

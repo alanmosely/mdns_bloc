@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mdns_bloc/mdns_bloc.dart';
@@ -19,8 +21,8 @@ class MyApp extends StatelessWidget {
       home: BlocProvider(
         create: (_) => MDnsBloc()
           ..add(const MDnsEventStartSearch(
-            serverPointer: defaultServiceType,
-            service: _exampleService,
+            serviceType: defaultServiceType,
+            serviceName: _exampleService,
           )),
         child: const MDnsSearchPage(),
       ),
@@ -54,8 +56,8 @@ class MDnsSearchPage extends StatelessWidget {
                   tooltip: 'Search again',
                   onPressed: () => context.read<MDnsBloc>().add(
                         const MDnsEventStartSearch(
-                          serverPointer: defaultServiceType,
-                          service: _exampleService,
+                          serviceType: defaultServiceType,
+                          serviceName: _exampleService,
                         ),
                       ),
                 ),
@@ -77,9 +79,9 @@ class MDnsSearchPage extends StatelessWidget {
       case MDnsStatus.initial:
       case MDnsStatus.searching:
         return 'mDNS Scanning';
-      case MDnsStatus.mDnsScanned:
-      case MDnsStatus.mDnsFound:
-      case MDnsStatus.mDnsMatch:
+      case MDnsStatus.noneFound:
+      case MDnsStatus.found:
+      case MDnsStatus.matched:
         return 'mDNS Scanning Complete';
       case MDnsStatus.stopped:
         return 'mDNS Scanning Stopped';
@@ -102,7 +104,7 @@ class _MDnsSearchBody extends StatelessWidget {
       case MDnsStatus.searching:
         // Results stream into the state while the search runs; show them as
         // they arrive, with a progress bar while the scan is still going.
-        if (state.dnsSrvRecords.isEmpty) {
+        if (state.services.isEmpty) {
           return const _Spinner();
         }
         return Column(
@@ -112,19 +114,19 @@ class _MDnsSearchBody extends StatelessWidget {
             Expanded(child: _ServiceList(state: state)),
           ],
         );
-      case MDnsStatus.mDnsScanned:
+      case MDnsStatus.noneFound:
         return const Center(child: Text('No services found'));
       case MDnsStatus.stopped:
-        if (state.dnsSrvRecords.isEmpty) {
+        if (state.services.isEmpty) {
           return const Center(child: Text('Search stopped'));
         }
         return _ServiceList(state: state);
-      case MDnsStatus.mDnsFound:
-      case MDnsStatus.mDnsMatch:
+      case MDnsStatus.found:
+      case MDnsStatus.matched:
         return _ServiceList(state: state);
       case MDnsStatus.error:
         return Text(
-          'There was an error in scanning: ${state.errorMsg}\n\n'
+          'There was an error in scanning: ${state.errorMessage}\n\n'
           'Final state was: $state',
         );
     }
@@ -162,7 +164,7 @@ class _ServiceList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final List<SrvResourceRecord> services = state.dnsSrvRecords.keys.toList();
+    final List<MDnsService> services = state.services;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: <Widget>[
@@ -177,27 +179,13 @@ class _ServiceList extends StatelessWidget {
           child: ListView.builder(
             itemCount: services.length,
             itemBuilder: (BuildContext context, int index) {
-              final SrvResourceRecord service = services[index];
-              final List<IPAddressResourceRecord> addresses =
-                  state.dnsSrvRecords[service] ??
-                      const <IPAddressResourceRecord>[];
-              final String addressText = addresses.isEmpty
+              final MDnsService service = services[index];
+              final String addressText = service.addresses.isEmpty
                   ? 'no address resolved'
-                  : addresses
-                      .map((IPAddressResourceRecord record) =>
-                          record.address.address)
+                  : service.addresses
+                      .map((InternetAddress address) => address.address)
                       .join(', ');
-              final List<TxtResourceRecord> txtRecords =
-                  state.dnsTxtRecords[service.name.toLowerCase()] ??
-                      const <TxtResourceRecord>[];
-              // A TXT record's text holds one line per key=value string, and
-              // services without metadata publish an empty TXT record, so
-              // flatten to one line and skip empty entries.
-              final String txtText = txtRecords
-                  .map((TxtResourceRecord record) =>
-                      record.text.trim().replaceAll('\n', '; '))
-                  .where((String text) => text.isNotEmpty)
-                  .join('; ');
+              final String txtText = service.txt.join('; ');
               final String subtitle = txtText.isEmpty
                   ? '$addressText — port ${service.port}'
                   : '$addressText — port ${service.port}\n$txtText';
@@ -205,9 +193,7 @@ class _ServiceList extends StatelessWidget {
                 title: Text(service.name),
                 subtitle: Text(subtitle),
                 isThreeLine: txtText.isNotEmpty,
-                tileColor: service.name == state.service?.name
-                    ? Colors.lightBlue
-                    : null,
+                tileColor: service == state.match ? Colors.lightBlue : null,
               );
             },
           ),

@@ -3,16 +3,10 @@
 library;
 
 export 'package:multicast_dns/multicast_dns.dart'
-    show
-        IPAddressResourceRecord,
-        MDnsClient,
-        PtrResourceRecord,
-        ResourceRecord,
-        ResourceRecordQuery,
-        SrvResourceRecord,
-        TxtResourceRecord;
+    show MDnsClient, NetworkInterfacesFactory, RawDatagramSocketFactory;
 
 export 'src/mdns_bloc.dart';
 export 'src/mdns_constants.dart';
 export 'src/mdns_event.dart';
+export 'src/mdns_service.dart';
 export 'src/mdns_state.dart';

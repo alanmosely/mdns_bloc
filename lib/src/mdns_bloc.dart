@@ -1,17 +1,19 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:bloc/bloc.dart';
 import 'package:bloc_concurrency/bloc_concurrency.dart';
-import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:meta/meta.dart';
 import 'package:multicast_dns/multicast_dns.dart';
 
 import 'mdns_event.dart';
+import 'mdns_service.dart';
 import 'mdns_state.dart';
 
 /// A [Bloc] that performs service discovery over multicast DNS (mDNS).
 ///
 /// Add an [MDnsEventStartSearch] to begin a search; progress and results are
-/// reported through [MDnsState]. While the search runs, records are emitted
+/// reported through [MDnsState]. While the search runs, services are emitted
 /// progressively: each `MDnsStatus.searching` state carries a snapshot of
 /// everything discovered so far. Adding another [MDnsEventStartSearch] while
 /// a search is in flight cancels it and starts over, and an
@@ -19,19 +21,40 @@ import 'mdns_state.dart';
 ///
 /// Every search runs on its own [MDnsClient], created per search and stopped
 /// when the search completes, is cancelled, or the bloc is closed. Pass a
-/// custom `clientFactory` to configure the client, or to substitute a fake
-/// in tests; by default the bloc creates an [MDnsClient] whose sockets it
+/// custom `clientFactory` to substitute a client (e.g. a fake in tests); it
+/// must return a fresh instance on every call, matching the per-search
+/// model. By default the bloc creates an [MDnsClient] whose sockets it
 /// tracks, so they can be reclaimed even when starting the client fails
-/// partway.
+/// partway. Pass `interfacesFactory` to control which network interfaces
+/// each search listens on (e.g. to exclude a VPN interface); it applies to
+/// injected clients too, since the bloc owns the `start()` call.
+///
+/// A failure — thrown by a lookup, or reported asynchronously by the
+/// client's receive socket — cancels the search and is surfaced as an
+/// [MDnsStatus.error] state carrying the original error object.
 class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
-  MDnsBloc({MDnsClient Function()? clientFactory})
-      : _clientFactory = clientFactory,
+  MDnsBloc({
+    MDnsClient Function()? clientFactory,
+    NetworkInterfacesFactory? interfacesFactory,
+    @visibleForTesting RawDatagramSocketFactory? socketFactory,
+  })  : _clientFactory = clientFactory,
+        _interfacesFactory = interfacesFactory,
+        _socketFactory = socketFactory,
         super(const MDnsState()) {
     on<MDnsEventStartSearch>(_onStart, transformer: restartable());
     on<MDnsEventStopSearch>(_onStop);
   }
 
   final MDnsClient Function()? _clientFactory;
+
+  /// Selects the network interfaces every search listens on; passed to
+  /// [MDnsClient.start]. When null, the client's default (all multicast-
+  /// capable interfaces) is used.
+  final NetworkInterfacesFactory? _interfacesFactory;
+
+  /// Binds the sockets of the default client; a test seam for exercising the
+  /// socket-reclaim path without touching the network.
+  final RawDatagramSocketFactory? _socketFactory;
 
   /// The client used by the search currently in flight, if any.
   MDnsClient? _activeClient;
@@ -57,74 +80,127 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     emit(const MDnsState(status: MDnsStatus.searching));
 
     final MDnsClient client = _createClient();
-    final List<PtrResourceRecord> ptrRecords = <PtrResourceRecord>[];
-    final Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords =
-        <SrvResourceRecord, List<IPAddressResourceRecord>>{};
-    final Map<String, List<TxtResourceRecord>> txtRecords =
-        <String, List<TxtResourceRecord>>{};
+    final List<String> discoveredNames = <String>[];
+    final Map<String, _ServiceResolution> resolutionsByName =
+        <String, _ServiceResolution>{};
 
-    // Emits a searching-status snapshot of everything discovered so far.
-    // The collections are copied because the scan keeps mutating them after
-    // the state is emitted.
+    // The first failure of the search, wherever it surfaced: a lookup stream
+    // erroring, or the client's receive socket reporting an error outside
+    // the handler's await chain. Recording a failure also stops the client,
+    // so pending lookup streams unwind and the error state surfaces promptly
+    // instead of after the remaining lookups run their full timeouts.
+    Object? failure;
+    StackTrace? failureTrace;
+    void recordFailure(Object error, StackTrace stackTrace) {
+      failure ??= error;
+      failureTrace ??= stackTrace;
+      if (identical(_activeClient, client)) {
+        _activeClient = null;
+      }
+      _stopClient(client);
+    }
+
+    /// Whether this search is over: superseded, stopped, closed, or failed.
+    bool searchEnded() =>
+        generation != _generation || failure != null || emit.isDone;
+
+    /// Returns [future] with its errors contained: a listener is attached
+    /// immediately, so a failure while the future sits in a pending list
+    /// during an open `await for` cannot become an unhandled zone error.
+    ///
+    /// A [StateError] after the search has ended is the expected sound of a
+    /// lookup unwinding on a stopped client, and is swallowed; every other
+    /// error — including a [StateError] thrown while the search is live,
+    /// which can only be a defect — is recorded as the search's failure.
+    Future<void> guarded(Future<void> future) {
+      return future.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace stackTrace) {
+          if (error is StateError && searchEnded()) {
+            return;
+          }
+          recordFailure(error, stackTrace);
+        },
+      );
+    }
+
+    List<MDnsService> snapshotServices() => List<MDnsService>.unmodifiable(
+          resolutionsByName.values
+              .expand((_ServiceResolution resolution) => resolution.services()),
+        );
+
+    List<String> snapshotNames() => List<String>.unmodifiable(discoveredNames);
+
+    // Emits a searching-status snapshot of everything discovered so far. The
+    // services are rebuilt from the mutable accumulators on every call, so
+    // emitted states can never be mutated by later discoveries. After a
+    // failure the search only unwinds, so nothing further is reported.
     void emitProgress() {
-      if (_isStale(generation, emit)) {
+      if (_isStale(generation, emit) || failure != null) {
         return;
       }
       emit(MDnsState(
         status: MDnsStatus.searching,
-        dnsPtrRecords: List<PtrResourceRecord>.of(ptrRecords),
-        dnsSrvRecords: <SrvResourceRecord, List<IPAddressResourceRecord>>{
-          for (final MapEntry<SrvResourceRecord,
-              List<IPAddressResourceRecord>> entry in srvRecords.entries)
-            entry.key: List<IPAddressResourceRecord>.of(entry.value),
-        },
-        dnsTxtRecords: <String, List<TxtResourceRecord>>{
-          for (final MapEntry<String, List<TxtResourceRecord>> entry
-              in txtRecords.entries)
-            entry.key: List<TxtResourceRecord>.of(entry.value),
-        },
+        services: snapshotServices(),
+        discoveredNames: snapshotNames(),
       ));
     }
 
     try {
-      await client.start();
+      await client.start(
+        interfacesFactory: _interfacesFactory,
+        // Without onError, an error event on the client's receive socket is
+        // an unhandled zone error the bloc could never surface. Recording it
+        // stops the client, so pending lookups unwind and the handler
+        // reports it below.
+        onError: recordFailure,
+      );
       if (_isStale(generation, emit)) {
         return;
       }
       _activeClient = client;
 
-      final Set<String> knownPtrNames = <String>{};
+      final Set<String> knownNames = <String>{};
+      bool anyServiceResolved() => resolutionsByName.values
+          .any((_ServiceResolution resolution) => resolution.srvs.isNotEmpty);
+
       int attempt = 0;
       while (!_isStale(generation, emit) &&
-          srvRecords.isEmpty &&
+          failure == null &&
+          !anyServiceResolved() &&
           attempt <= event.retries) {
         // mDNS responders may announce more than once per query window, and
         // earlier attempts may have seen a PTR whose service could not be
         // resolved, so deduplicate within the attempt but resolve again.
-        final Set<String> attemptPtrNames = <String>{};
+        final Set<String> attemptNames = <String>{};
         final List<Future<void>> resolutions = <Future<void>>[];
         await for (final PtrResourceRecord ptr
             in client.lookup<PtrResourceRecord>(
-          ResourceRecordQuery.serverPointer(event.serverPointer),
+          ResourceRecordQuery.serverPointer(event.serviceType),
           timeout: event.timeout,
         )) {
-          if (!attemptPtrNames.add(ptr.domainName)) {
+          // DNS names are case-insensitive; key the accumulators on the
+          // lowercased instance name so differently-cased announcements of
+          // one instance collapse.
+          final String key = ptr.domainName.toLowerCase();
+          if (!attemptNames.add(key)) {
             continue;
           }
-          if (knownPtrNames.add(ptr.domainName)) {
-            ptrRecords.add(ptr);
+          if (knownNames.add(key)) {
+            discoveredNames.add(ptr.domainName);
+            resolutionsByName[key] = _ServiceResolution(ptr.domainName);
             emitProgress();
           }
-          resolutions.add(
+          resolutions.add(guarded(
             _resolveService(
               client,
               ptr.domainName,
               event.timeout,
-              srvRecords,
-              txtRecords,
+              resolutionsByName[key]!,
               emitProgress,
+              guarded,
             ),
-          );
+          ));
         }
         await Future.wait(resolutions);
         attempt++;
@@ -133,33 +209,36 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
       if (_isStale(generation, emit)) {
         return;
       }
+      if (failure != null) {
+        Error.throwWithStackTrace(failure!, failureTrace ?? StackTrace.current);
+      }
 
-      if (srvRecords.isEmpty) {
+      final List<MDnsService> services = snapshotServices();
+      if (services.isEmpty) {
         emit(MDnsState(
-          status: MDnsStatus.mDnsScanned,
-          dnsPtrRecords: ptrRecords,
-          dnsTxtRecords: txtRecords,
+          status: MDnsStatus.noneFound,
+          discoveredNames: snapshotNames(),
         ));
       } else {
-        final SrvResourceRecord? match = _findMatch(srvRecords, event.service);
+        final MDnsService? match = _findMatch(services, event.serviceName);
         emit(MDnsState(
-          status: match == null ? MDnsStatus.mDnsFound : MDnsStatus.mDnsMatch,
-          dnsPtrRecords: ptrRecords,
-          dnsSrvRecords: srvRecords,
-          dnsTxtRecords: txtRecords,
-          service: match,
+          status: match == null ? MDnsStatus.found : MDnsStatus.matched,
+          services: services,
+          discoveredNames: snapshotNames(),
+          match: match,
         ));
       }
-    } catch (error) {
+    } catch (error, stackTrace) {
       if (_isStale(generation, emit)) {
         return;
       }
+      recordFailure(error, stackTrace);
       emit(MDnsState(
         status: MDnsStatus.error,
-        dnsPtrRecords: ptrRecords,
-        dnsSrvRecords: srvRecords,
-        dnsTxtRecords: txtRecords,
-        errorMsg: error.toString(),
+        services: snapshotServices(),
+        discoveredNames: snapshotNames(),
+        error: failure,
+        stackTrace: failureTrace,
       ));
     } finally {
       if (identical(_activeClient, client)) {
@@ -188,161 +267,147 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
   }
 
   /// Looks up the SRV and TXT records behind [domainName] and the addresses
-  /// of the SRV targets, adding what it finds to [srvRecords] and
-  /// [txtRecords] and reporting each addition through [onProgress].
+  /// of the SRV targets, adding what it finds to [resolution] and reporting
+  /// each addition through [onProgress]. Futures spawned along the way are
+  /// wrapped in [guard], the search's error containment.
   Future<void> _resolveService(
     MDnsClient client,
     String domainName,
     Duration timeout,
-    Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords,
-    Map<String, List<TxtResourceRecord>> txtRecords,
+    _ServiceResolution resolution,
     void Function() onProgress,
+    Future<void> Function(Future<void>) guard,
   ) async {
     await Future.wait(<Future<void>>[
-      _resolveSrv(client, domainName, timeout, srvRecords, onProgress),
-      _collectTxt(client, domainName, timeout, txtRecords, onProgress),
+      _resolveSrv(client, domainName, timeout, resolution, onProgress, guard),
+      _collectTxt(client, domainName, timeout, resolution, onProgress),
     ]);
   }
 
   /// Looks up the SRV records behind [domainName] and the addresses of their
-  /// target hosts, adding what it finds to [srvRecords].
+  /// target hosts, adding what it finds to [resolution].
   Future<void> _resolveSrv(
     MDnsClient client,
     String domainName,
     Duration timeout,
-    Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords,
+    _ServiceResolution resolution,
     void Function() onProgress,
+    Future<void> Function(Future<void>) guard,
   ) async {
-    try {
-      final List<Future<void>> addressLookups = <Future<void>>[];
-      await for (final SrvResourceRecord srv
-          in client.lookup<SrvResourceRecord>(
-        ResourceRecordQuery.service(domainName),
-        timeout: timeout,
-      )) {
-        // Record equality includes validUntil, so repeated announcements of
-        // the same service compare unequal; deduplicate on identity fields.
-        final bool alreadyKnown = srvRecords.keys.any(
-          (SrvResourceRecord known) =>
-              known.name == srv.name &&
-              known.target == srv.target &&
-              known.port == srv.port,
-        );
-        if (alreadyKnown) {
-          continue;
-        }
-        final List<IPAddressResourceRecord> addresses =
-            <IPAddressResourceRecord>[];
-        srvRecords[srv] = addresses;
-        onProgress();
-        addressLookups.add(
-          _resolveAddresses(client, srv.target, timeout, addresses, onProgress),
-        );
+    final List<Future<void>> addressLookups = <Future<void>>[];
+    await for (final SrvResourceRecord srv in client.lookup<SrvResourceRecord>(
+      ResourceRecordQuery.service(domainName),
+      timeout: timeout,
+    )) {
+      // Record equality includes validUntil, so repeated announcements of
+      // the same service compare unequal; deduplicate on identity fields,
+      // case-insensitively as DNS names are.
+      final bool alreadyKnown = resolution.srvs.any(
+        (_SrvResolution known) =>
+            known.srv.target.toLowerCase() == srv.target.toLowerCase() &&
+            known.srv.port == srv.port,
+      );
+      if (alreadyKnown) {
+        continue;
       }
-      await Future.wait(addressLookups);
-    } on StateError {
-      // The client was stopped while this lookup was in flight (the search
-      // was cancelled or superseded); there is nothing left to resolve.
+      final _SrvResolution srvResolution = _SrvResolution(srv);
+      resolution.srvs.add(srvResolution);
+      onProgress();
+      addressLookups.add(guard(
+        _resolveAddresses(
+            client, srv.target, timeout, srvResolution, onProgress),
+      ));
     }
+    await Future.wait(addressLookups);
   }
 
-  /// Collects the TXT records for [domainName] into [txtRecords], keyed by
-  /// service instance name and deduplicated by text content.
+  /// Collects the TXT attributes for [domainName] into [resolution],
+  /// deduplicated. A TXT record holds one attribute per line; blank lines
+  /// (services without metadata publish a single empty TXT record) are
+  /// skipped.
   Future<void> _collectTxt(
     MDnsClient client,
     String domainName,
     Duration timeout,
-    Map<String, List<TxtResourceRecord>> txtRecords,
+    _ServiceResolution resolution,
     void Function() onProgress,
   ) async {
-    try {
-      // DNS names are case-insensitive and a responder's SRV owner name may
-      // differ in case from its PTR rdata, so normalize the key to keep the
-      // map addressable via SrvResourceRecord.name.
-      final String key = domainName.toLowerCase();
-      await for (final TxtResourceRecord txt
-          in client.lookup<TxtResourceRecord>(
-        ResourceRecordQuery.text(domainName),
-        timeout: timeout,
-      )) {
-        final List<TxtResourceRecord> records = txtRecords.putIfAbsent(
-          key,
-          () => <TxtResourceRecord>[],
-        );
-        if (records.any((TxtResourceRecord known) => known.text == txt.text)) {
+    await for (final TxtResourceRecord txt in client.lookup<TxtResourceRecord>(
+      ResourceRecordQuery.text(domainName),
+      timeout: timeout,
+    )) {
+      bool added = false;
+      for (final String line in txt.text.split('\n')) {
+        final String entry = line.trim();
+        if (entry.isEmpty || resolution.txt.contains(entry)) {
           continue;
         }
-        records.add(txt);
+        resolution.txt.add(entry);
+        added = true;
+      }
+      if (added) {
         onProgress();
       }
-    } on StateError {
-      // The client was stopped while this lookup was in flight.
     }
   }
 
-  /// Resolves the IPv4 and IPv6 addresses of [target] into [addresses].
+  /// Resolves the IPv4 and IPv6 addresses of [target] into [resolution].
   Future<void> _resolveAddresses(
     MDnsClient client,
     String target,
     Duration timeout,
-    List<IPAddressResourceRecord> addresses,
+    _SrvResolution resolution,
     void Function() onProgress,
   ) async {
-    try {
-      final Set<String> seenAddresses = <String>{};
-      await Future.wait(<Future<void>>[
-        _collectAddresses(
-          client,
-          ResourceRecordQuery.addressIPv4(target),
-          timeout,
-          addresses,
-          seenAddresses,
-          onProgress,
-        ),
-        _collectAddresses(
-          client,
-          ResourceRecordQuery.addressIPv6(target),
-          timeout,
-          addresses,
-          seenAddresses,
-          onProgress,
-        ),
-      ]);
-    } on StateError {
-      // The client was stopped while this lookup was in flight.
-    }
+    final Set<String> seenAddresses = <String>{};
+    await Future.wait(<Future<void>>[
+      _collectAddresses(
+        client,
+        ResourceRecordQuery.addressIPv4(target),
+        timeout,
+        resolution,
+        seenAddresses,
+        onProgress,
+      ),
+      _collectAddresses(
+        client,
+        ResourceRecordQuery.addressIPv6(target),
+        timeout,
+        resolution,
+        seenAddresses,
+        onProgress,
+      ),
+    ]);
   }
 
   Future<void> _collectAddresses(
     MDnsClient client,
     ResourceRecordQuery query,
     Duration timeout,
-    List<IPAddressResourceRecord> addresses,
+    _SrvResolution resolution,
     Set<String> seenAddresses,
     void Function() onProgress,
   ) async {
     await for (final IPAddressResourceRecord record
         in client.lookup<IPAddressResourceRecord>(query, timeout: timeout)) {
       if (seenAddresses.add(record.address.address)) {
-        addresses.add(record);
+        resolution.addresses.add(record.address);
         onProgress();
       }
     }
   }
 
-  /// Returns the discovered record whose instance name matches [service],
-  /// compared case-insensitively as DNS names are case-insensitive.
-  SrvResourceRecord? _findMatch(
-    Map<SrvResourceRecord, List<IPAddressResourceRecord>> srvRecords,
-    String? service,
-  ) {
-    if (service == null) {
+  /// Returns the discovered service whose instance name matches
+  /// [serviceName], compared case-insensitively as DNS names are
+  /// case-insensitive.
+  MDnsService? _findMatch(List<MDnsService> services, String? serviceName) {
+    if (serviceName == null) {
       return null;
     }
-    final String wanted = service.toLowerCase();
-    for (final SrvResourceRecord srv in srvRecords.keys) {
-      if (srv.name.toLowerCase() == wanted) {
-        return srv;
+    final String wanted = serviceName.toLowerCase();
+    for (final MDnsService service in services) {
+      if (service.name.toLowerCase() == wanted) {
+        return service;
       }
     }
     return null;
@@ -368,6 +433,8 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     if (factory != null) {
       return factory();
     }
+    final RawDatagramSocketFactory bind =
+        _socketFactory ?? RawDatagramSocket.bind;
     final List<RawDatagramSocket> sockets = <RawDatagramSocket>[];
     final MDnsClient client = MDnsClient(
       rawDatagramSocketFactory: (
@@ -377,7 +444,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
         bool reusePort = false,
         int ttl = 1,
       }) async {
-        final RawDatagramSocket socket = await RawDatagramSocket.bind(
+        final RawDatagramSocket socket = await bind(
           host,
           port,
           reuseAddress: reuseAddress,
@@ -418,4 +485,41 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
       }
     }
   }
+}
+
+/// Accumulates the records resolved for one service instance while a search
+/// runs.
+class _ServiceResolution {
+  _ServiceResolution(this.name);
+
+  /// The instance name as first announced.
+  final String name;
+
+  /// The SRV records resolved for this instance (usually one), each with the
+  /// addresses of its target host.
+  final List<_SrvResolution> srvs = <_SrvResolution>[];
+
+  /// The TXT attributes announced for this instance, deduplicated.
+  final List<String> txt = <String>[];
+
+  /// Builds an immutable [MDnsService] per resolved SRV record.
+  Iterable<MDnsService> services() {
+    return srvs.map((_SrvResolution resolution) => MDnsService(
+          name: name,
+          host: resolution.srv.target,
+          port: resolution.srv.port,
+          priority: resolution.srv.priority,
+          weight: resolution.srv.weight,
+          addresses: List<InternetAddress>.unmodifiable(resolution.addresses),
+          txt: List<String>.unmodifiable(txt),
+        ));
+  }
+}
+
+/// One resolved SRV record and the addresses of its target host.
+class _SrvResolution {
+  _SrvResolution(this.srv);
+
+  final SrvResourceRecord srv;
+  final List<InternetAddress> addresses = <InternetAddress>[];
 }

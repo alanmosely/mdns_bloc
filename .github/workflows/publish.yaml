@@ -1,4 +1,4 @@
-# Publishes the package to pub.dev when a version tag (e.g. v0.2.0) is
+# Publishes the package to pub.dev when a version tag (e.g. v0.3.0) is
 # pushed, using pub.dev's GitHub Actions (OIDC) automated publishing.
 #
 # Requires one-time setup on pub.dev: package Admin tab -> Automated
@@ -12,7 +12,44 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
+  # Publishing is gated on the full test suite: pub.dev versions cannot be
+  # unpublished, so a tag on a broken commit must fail here rather than ship.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies
+        run: dart pub get
+
+      - name: Analyze
+        run: dart analyze lib test
+
+      - name: Run package tests
+        run: dart test
+
+      - name: Install example dependencies
+        run: flutter pub get
+        working-directory: example
+
+      - name: Analyze example
+        run: flutter analyze
+        working-directory: example
+
+      - name: Run example tests
+        run: flutter test
+        working-directory: example
+
+      - name: Check publishability
+        run: dart pub publish --dry-run
+
   publish:
+    needs: test
     permissions:
       id-token: write # Required for OIDC authentication with pub.dev.
     uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1

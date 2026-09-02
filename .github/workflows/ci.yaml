@@ -6,7 +6,43 @@ on:
   pull_request:
 
 jobs:
-  build:
+  # The package is pure Dart; test it against both the oldest SDK the
+  # pubspec claims to support and the latest stable, so lower-bound rot is
+  # caught before consumers hit it.
+  package:
+    name: package (Dart ${{ matrix.sdk }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sdk: ["3.5.0", stable]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ matrix.sdk }}
+
+      # --no-example: the example is a Flutter app and this job has only a
+      # Dart SDK; the example job below covers it.
+      - name: Install dependencies
+        run: dart pub get --no-example
+
+      - name: Check formatting
+        if: matrix.sdk == 'stable'
+        run: dart format --output=none --set-exit-if-changed lib test
+
+      - name: Analyze
+        run: dart analyze lib test
+
+      - name: Run tests
+        run: dart test
+
+      - name: Check publishability
+        if: matrix.sdk == 'stable'
+        run: dart pub publish --dry-run
+
+  example:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -18,23 +54,16 @@ jobs:
 
       - name: Install dependencies
         run: flutter pub get
-
-      - name: Install example dependencies
-        run: flutter pub get
         working-directory: example
 
       - name: Check formatting
-        run: dart format --output=none --set-exit-if-changed lib test example/lib example/test
+        run: dart format --output=none --set-exit-if-changed lib test
+        working-directory: example
 
       - name: Analyze
         run: flutter analyze
-
-      - name: Run package tests
-        run: flutter test
-
-      - name: Run example tests
-        run: flutter test
         working-directory: example
 
-      - name: Check publishability
-        run: flutter pub publish --dry-run
+      - name: Run tests
+        run: flutter test
+        working-directory: example

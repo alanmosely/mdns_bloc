@@ -1,5 +1,6 @@
 import 'package:equatable/equatable.dart';
-import 'package:multicast_dns/multicast_dns.dart';
+
+import 'mdns_service.dart';
 
 /// The lifecycle of an mDNS search.
 enum MDnsStatus {
@@ -7,103 +8,105 @@ enum MDnsStatus {
   initial,
 
   /// A search is currently in flight. States with this status carry the
-  /// records discovered so far, growing as the search resolves them.
+  /// services discovered so far, growing as the search resolves them.
   searching,
 
-  /// A search completed without discovering any services.
-  mDnsScanned,
+  /// A search completed without resolving any services. Instance names that
+  /// were announced but never resolved are in [MDnsState.discoveredNames].
+  noneFound,
 
-  /// A search discovered services, but none matched the requested service
-  /// instance name (or no name was requested).
-  mDnsFound,
+  /// A search resolved services, but none matched the requested instance
+  /// name (or no name was requested).
+  found,
 
-  /// A search discovered a service matching the requested instance name.
-  mDnsMatch,
+  /// A search resolved a service matching the requested instance name; see
+  /// [MDnsState.match].
+  matched,
 
   /// The search in flight was cancelled by an `MDnsEventStopSearch`. The
-  /// state retains the records discovered before the cancellation.
+  /// state retains the services discovered before the cancellation.
   stopped,
 
-  /// The search failed; see [MDnsState.errorMsg].
+  /// The search failed; see [MDnsState.error]. The state retains the
+  /// services discovered before the failure.
   error,
 }
 
-/// The state of an mDNS search and the records it has discovered.
-class MDnsState extends Equatable {
+/// The state of an mDNS search and the services it has discovered.
+final class MDnsState extends Equatable {
   const MDnsState({
     this.status = MDnsStatus.initial,
-    this.dnsPtrRecords = const <PtrResourceRecord>[],
-    this.dnsSrvRecords =
-        const <SrvResourceRecord, List<IPAddressResourceRecord>>{},
-    this.dnsTxtRecords = const <String, List<TxtResourceRecord>>{},
-    this.service,
-    this.errorMsg = '',
+    this.services = const <MDnsService>[],
+    this.discoveredNames = const <String>[],
+    this.match,
+    this.error,
+    this.stackTrace,
   });
 
   /// Where the search currently is in its lifecycle.
   final MDnsStatus status;
 
-  /// The unique PTR records discovered across all attempts of the search.
-  final List<PtrResourceRecord> dnsPtrRecords;
+  /// The service instances resolved so far, in discovery order.
+  final List<MDnsService> services;
 
-  /// The SRV records discovered, each mapped to the IPv4/IPv6 address records
-  /// resolved for its target host (an empty list when no address resolved).
-  final Map<SrvResourceRecord, List<IPAddressResourceRecord>> dnsSrvRecords;
+  /// Every service instance name announced so far (via PTR records), in
+  /// discovery order and with its announced case — a superset of the names
+  /// in [services], since an announced instance may never resolve.
+  final List<String> discoveredNames;
 
-  /// The TXT records discovered, keyed by *lowercased* service instance name
-  /// (DNS names are case-insensitive): look up an instance's TXT data with
-  /// `dnsTxtRecords[srv.name.toLowerCase()]`. Instances without TXT data
-  /// have no entry.
-  final Map<String, List<TxtResourceRecord>> dnsTxtRecords;
+  /// The service matching `MDnsEventStartSearch.serviceName`, when one was
+  /// found.
+  final MDnsService? match;
 
-  /// The record matching `MDnsEventStartSearch.service`, when one was found.
-  final SrvResourceRecord? service;
+  /// What went wrong when [status] is [MDnsStatus.error]: the original
+  /// error object (often a `SocketException`), untouched so it can be
+  /// matched on by type.
+  final Object? error;
 
-  /// A description of what went wrong when [status] is [MDnsStatus.error].
-  final String errorMsg;
+  /// The stack trace captured with [error], when one was available.
+  ///
+  /// Not part of equality: stack traces compare by identity and carry no
+  /// state of their own.
+  final StackTrace? stackTrace;
+
+  /// A description of [error], or null when there is none.
+  String? get errorMessage => error?.toString();
 
   static const Object _unset = Object();
 
   /// Creates a copy of this state with the given fields replaced.
   ///
-  /// Pass `service: null` explicitly to clear [service]; omitting the
-  /// parameter keeps the current value.
+  /// Pass `match: null` (or `error: null`, `stackTrace: null`) explicitly to
+  /// clear the field; omitting the parameter keeps the current value.
   MDnsState copyWith({
     MDnsStatus? status,
-    List<PtrResourceRecord>? dnsPtrRecords,
-    Map<SrvResourceRecord, List<IPAddressResourceRecord>>? dnsSrvRecords,
-    Map<String, List<TxtResourceRecord>>? dnsTxtRecords,
-    Object? service = _unset,
-    String? errorMsg,
+    List<MDnsService>? services,
+    List<String>? discoveredNames,
+    Object? match = _unset,
+    Object? error = _unset,
+    Object? stackTrace = _unset,
   }) {
     return MDnsState(
       status: status ?? this.status,
-      dnsPtrRecords: dnsPtrRecords ?? this.dnsPtrRecords,
-      dnsSrvRecords: dnsSrvRecords ?? this.dnsSrvRecords,
-      dnsTxtRecords: dnsTxtRecords ?? this.dnsTxtRecords,
-      service: identical(service, _unset)
-          ? this.service
-          : service as SrvResourceRecord?,
-      errorMsg: errorMsg ?? this.errorMsg,
+      services: services ?? this.services,
+      discoveredNames: discoveredNames ?? this.discoveredNames,
+      match: identical(match, _unset) ? this.match : match as MDnsService?,
+      error: identical(error, _unset) ? this.error : error,
+      stackTrace: identical(stackTrace, _unset)
+          ? this.stackTrace
+          : stackTrace as StackTrace?,
     );
   }
 
   @override
   String toString() {
     return 'MDnsState { status: $status, '
-        'dnsPtrRecords: ${dnsPtrRecords.length}, '
-        'dnsSrvRecords: ${dnsSrvRecords.length}, '
-        'dnsTxtRecords: ${dnsTxtRecords.length}, '
-        'service: $service, errorMsg: $errorMsg }';
+        'services: ${services.length}, '
+        'discoveredNames: ${discoveredNames.length}, '
+        'match: ${match?.name}, error: $error }';
   }
 
   @override
-  List<Object?> get props => <Object?>[
-        status,
-        dnsPtrRecords,
-        dnsSrvRecords,
-        dnsTxtRecords,
-        service,
-        errorMsg,
-      ];
+  List<Object?> get props =>
+      <Object?>[status, services, discoveredNames, match, error];
 }
