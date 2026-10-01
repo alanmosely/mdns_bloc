@@ -21,6 +21,6 @@ dependencies:
   multicast_dns: ^0.3.3
 
 dev_dependencies:
-  lints: ^5.0.0
+  lints: ">=5.0.0 <7.0.0"
   mocktail: ^1.0.0
   test: ^1.25.0
