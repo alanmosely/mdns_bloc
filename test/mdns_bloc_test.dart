@@ -10,8 +10,6 @@ class MockMDnsClient extends Mock implements MDnsClient {}
 
 class MockRawDatagramSocket extends Mock implements RawDatagramSocket {}
 
-class MockNetworkInterface extends Mock implements NetworkInterface {}
-
 const String _type = '_http._tcp';
 const int _validUntil = 1 << 40;
 
@@ -143,8 +141,6 @@ void main() {
   setUpAll(() {
     registerFallbackValue(ResourceRecordQuery.serverPointer('$_type.local'));
     registerFallbackValue(Duration.zero);
-    registerFallbackValue(InternetAddress.loopbackIPv4);
-    registerFallbackValue(MockNetworkInterface());
   });
 
   group('MDnsBloc', () {
@@ -1032,23 +1028,19 @@ void main() {
     test(
         'the default client reclaims its bound sockets when start() fails '
         'partway', () async {
-      // The real MDnsClient.start() does not clean up after itself when
-      // joinMulticast throws (e.g. on a VPN interface), and its stop() is a
+      // The real MDnsClient.start() does not clean up after itself when it
+      // fails after binding its sockets (e.g. enumerating interfaces or
+      // joining multicast throws on a VPN interface), and its stop() is a
       // no-op on a client that never finished starting. The bloc tracks the
       // sockets its default factory bound and must close them itself.
       final MockRawDatagramSocket socket = MockRawDatagramSocket();
       when(() => socket.address).thenReturn(InternetAddress.anyIPv4);
-      when(() => socket.joinMulticast(any(), any())).thenThrow(
-        const SocketException('joinMulticast failed'),
-      );
-
-      final MockNetworkInterface interface = MockNetworkInterface();
-      when(() => interface.addresses)
-          .thenReturn(<InternetAddress>[InternetAddress('192.168.1.5')]);
 
       final MDnsBloc bloc = MDnsBloc(
+        // start() awaits the interfaces only after binding the incoming
+        // socket, so this fails the start with the socket already bound.
         interfacesFactory: (InternetAddressType type) async =>
-            <NetworkInterface>[interface],
+            throw const SocketException('interfaces unavailable'),
         socketFactory: (
           dynamic host,
           int port, {
@@ -1066,7 +1058,7 @@ void main() {
 
       expect(result.status, MDnsStatus.error);
       expect(result.error, isA<SocketException>());
-      expect(result.errorMessage, contains('joinMulticast failed'));
+      expect(result.errorMessage, contains('interfaces unavailable'));
       // The socket bound by the failed start() must have been reclaimed.
       verify(() => socket.close()).called(1);
     });
