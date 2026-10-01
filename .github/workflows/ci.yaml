@@ -67,3 +67,12 @@ jobs:
       - name: Run tests
         run: flutter test
         working-directory: example
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build Android example
+        run: flutter build apk --debug --target-platform android-arm64
+        working-directory: example
