@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+* Allow Equatable 3 alongside Equatable 2, preserving the Dart 3.5 minimum.
+* Update package and example lint dependencies and GitHub Actions checkout.
+* Update the example's Android Gradle plugin, Gradle wrapper, and Kotlin.
+* Build the Android example in CI and before publishing, in addition to
+  package tests on the minimum and stable Dart SDKs and example widget tests.
+
 ## 0.3.0
 
 Breaking changes:

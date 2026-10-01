@@ -45,6 +45,15 @@ jobs:
         run: flutter test
         working-directory: example
 
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build Android example
+        run: flutter build apk --debug --target-platform android-arm64
+        working-directory: example
+
       - name: Check publishability
         run: dart pub publish --dry-run
 
