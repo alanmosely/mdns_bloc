@@ -79,7 +79,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
 
     emit(const MDnsState(status: MDnsStatus.searching));
 
-    final MDnsClient client = _createClient();
+    MDnsClient? client;
     final List<String> discoveredNames = <String>[];
     final Map<String, _ServiceResolution> resolutionsByName =
         <String, _ServiceResolution>{};
@@ -147,6 +147,7 @@ class MDnsBloc extends Bloc<MDnsEvent, MDnsState> {
     }
 
     try {
+      client = _createClient();
       await client.start(
         interfacesFactory: _interfacesFactory,
         // Without onError, an error event on the client's receive socket is

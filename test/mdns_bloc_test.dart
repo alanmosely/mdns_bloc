@@ -629,6 +629,46 @@ void main() {
       expect(result.discoveredNames, <String>[ptr.domainName]);
     });
 
+    test('reports a client factory failure and allows another search',
+        () async {
+      final StateError error = StateError('client unavailable');
+      final StackTrace stackTrace = StackTrace.current;
+      final MockMDnsClient client = _clientWith(
+        ptr: () => Stream<PtrResourceRecord>.value(_ptr('printer')),
+        srv: (_) => Stream<SrvResourceRecord>.value(_srv('printer')),
+      );
+      bool firstCall = true;
+      final MDnsBloc bloc = _bloc(() {
+        if (firstCall) {
+          firstCall = false;
+          Error.throwWithStackTrace(error, stackTrace);
+        }
+        return client;
+      });
+      final List<MDnsState> states = _record(bloc);
+      const MDnsEventStartSearch event =
+          MDnsEventStartSearch(serviceType: _type, retries: 0);
+
+      final Future<MDnsState> firstSearch = _done(bloc);
+      bloc.add(event);
+      final MDnsState failed = await firstSearch;
+
+      expect(states.map((MDnsState state) => state.status),
+          <MDnsStatus>[MDnsStatus.searching, MDnsStatus.error]);
+      expect(failed.error, same(error));
+      expect(failed.stackTrace.toString(), stackTrace.toString());
+      expect(failed.services, isEmpty);
+      expect(failed.discoveredNames, isEmpty);
+
+      final Future<MDnsState> secondSearch = _done(bloc);
+      bloc.add(event);
+      final MDnsState found = await secondSearch;
+
+      expect(found.status, MDnsStatus.found);
+      expect(found.services.single.name, _ptr('printer').domainName);
+      expect(found.error, isNull);
+    });
+
     test('emits error when the client fails to start', () async {
       final MockMDnsClient client = MockMDnsClient();
       when(
