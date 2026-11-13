@@ -1,5 +1,7 @@
 import 'dart:async';
 
+// Match the example's SDK Material library on older and newer Flutter.
+// ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:flutter_test/flutter_test.dart';

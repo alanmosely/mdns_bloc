@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+* Report client factory exceptions as discovery errors and allow retrying.
+
 ## 0.3.1
 
 * Allow Equatable 3 alongside Equatable 2, preserving the Dart 3.5 minimum.

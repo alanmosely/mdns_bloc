@@ -12,6 +12,17 @@ on:
       - "v[0-9]+.[0-9]+.[0-9]+*"
 
 jobs:
+  minimum-sdk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: "3.5.0"
+      - run: dart pub get --no-example
+      - run: dart analyze lib test
+      - run: dart test
+
   # Publishing is gated on the full test suite: pub.dev versions cannot be
   # unpublished, so a tag on a broken commit must fail here rather than ship.
   test:
@@ -58,7 +69,7 @@ jobs:
         run: dart pub publish --dry-run
 
   publish:
-    needs: test
+    needs: [minimum-sdk, test]
     permissions:
       id-token: write # Required for OIDC authentication with pub.dev.
     uses: dart-lang/setup-dart/.github/workflows/publish.yml@v1
