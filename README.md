@@ -14,7 +14,19 @@ to react to states. Pure Dart — usable from Flutter apps (via
 [`flutter_bloc`][flutter_bloc_link]) and from command-line or server
 applications alike.
 
-## Features
+## Upgrade to 0.3.2
+
+Set `mdns_bloc: ^0.3.2` in your pubspec and run `dart pub get` (or
+`flutter pub get`). The Dart 3.5 minimum and public API are unchanged from 0.3.1;
+no stored-data migration is needed. A throwing injected client factory now emits
+`MDnsStatus.error` with the original error/stack instead of leaving discovery
+searching. Your normal error UI can offer a new search.
+
+The attached Android APK is a debug example, not an application update for your
+users. Consumers compile the published Dart package in their own app. See the
+[release notes](doc/releases/0.3.2.md).
+
+## Discovery features
 
 * Searches for services by type (e.g. `_http._tcp`), resolving PTR → SRV →
   A/AAAA and TXT records into typed, immutable `MDnsService` values, with

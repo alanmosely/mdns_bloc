@@ -1,8 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.3.2
 
 * Report client factory exceptions as discovery errors and allow retrying.
+* Require minimum-Dart validation before tag publication.
+* Update the Android example to Gradle 9.8.2, AGP 9.5.1 and Kotlin 2.4.21.
 
 ## 0.3.1
 
