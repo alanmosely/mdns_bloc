@@ -1,5 +1,7 @@
 import 'dart:io';
 
+// Keep the SDK Material library so this example also runs on older Flutter.
+// ignore: deprecated_member_use
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:mdns_bloc/mdns_bloc.dart';
